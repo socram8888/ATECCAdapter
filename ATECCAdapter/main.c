@@ -57,8 +57,10 @@ PROGMEM const char usbHidReportDescriptor[USB_CFG_HID_REPORT_DESCRIPTOR_LENGTH] 
 /* The following variables store the status of the current data transfer */
 
 static char kitRequest[KIT_BUF_SIZE];
+static uint8_t kitRequestLen;
+
 static char kitReply[KIT_BUF_SIZE];
-static uint8_t kitPtr;
+static uint8_t kitReplyPos;
 
 static uint8_t idleRate;
 
@@ -68,14 +70,18 @@ static uint8_t idleRate;
  * device. For more information see the documentation in usbdrv/usbdrv.h.
  */
 uchar usbFunctionWrite(uchar *data, uchar len) {
-    if (kitPtr + len > KIT_BUF_SIZE) {
-	    len = KIT_BUF_SIZE - kitPtr;
+    if (kitRequestLen + len > KIT_BUF_SIZE) {
+	    len = KIT_BUF_SIZE - kitRequestLen;
     }
     
-    memcpy(kitRequest + kitPtr, data, len);
-    kitPtr += len;
+    memcpy(kitRequest + kitRequestLen, data, len);
+    kitRequestLen += len;
 
-    return kitPtr == KIT_BUF_SIZE;
+	if (kitRequestLen == KIT_BUF_SIZE) {
+		kitReplyPos = 0;
+	}
+
+    return kitRequestLen == KIT_BUF_SIZE;
 }
 
 /* ------------------------------------------------------------------------- */
@@ -88,18 +94,17 @@ usbMsgLen_t usbFunctionSetup(uchar data[8]) {
 	}
 
 	switch (rq->bRequest) {
+		case USBRQ_HID_GET_REPORT:
+			usbMsgPtr = (usbMsgPtr_t) kitReply;
+			return KIT_BUF_SIZE;
+
 		case USBRQ_HID_SET_REPORT:
 			if (rq->wLength.word != KIT_BUF_SIZE) {
 				return 0;
 			}
 
-			kitPtr = 0;
+			kitRequestLen = 0;
 			return USB_NO_MSG;  /* use usbFunctionWrite() to receive data from host */
-
-		case USBRQ_HID_GET_REPORT:
-			PORTB ^= 0x02;
-			usbMsgPtr = kitRequest;
-			return KIT_BUF_SIZE;
 
 		case USBRQ_HID_GET_IDLE:
 			usbMsgPtr = &idleRate;
@@ -120,6 +125,7 @@ int main(void)
 	uchar   i;
 	DDRB |= 0x02;
 	PORTB |= 0x02;
+	kitReplyPos = KIT_BUF_SIZE + 1;
     wdt_enable(WDTO_1S);
     /* Even if you don't use the watchdog, turn it off here. On newer devices,
      * the status of the watchdog (on/off, period) is PRESERVED OVER RESET!
@@ -140,6 +146,15 @@ int main(void)
     for(;;){                /* main event loop */
         wdt_reset();
         usbPoll();
+		if (usbInterruptIsReady()) {
+			if (kitReplyPos == KIT_BUF_SIZE) {
+				usbSetInterrupt(NULL, 0);
+				kitReplyPos += 1;
+			} else if (kitReplyPos < KIT_BUF_SIZE) {
+				usbSetInterrupt(kitRequest + kitReplyPos, 8);
+				kitReplyPos += 8;
+			}
+		}
     }
     return 0;
 }
